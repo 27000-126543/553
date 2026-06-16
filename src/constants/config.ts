@@ -84,3 +84,15 @@ export const CINEMA_DIMENSIONS = {
   height: 15,
   floorHeight: 5,
 } as const;
+
+export const DISPATCH_EVENT_COLORS: Record<string, { color: string; bg: string; label: string }> = {
+  QUEUE_WINDOW_OPEN: { color: '#00D4AA', bg: 'rgba(0, 212, 170, 0.1)', label: '自动开窗' },
+  GUIDE_PATH_CREATE: { color: '#00FF88', bg: 'rgba(0, 255, 136, 0.1)', label: '分流引导' },
+  GUIDE_PATH_COMPLETE: { color: '#88CCFF', bg: 'rgba(136, 204, 255, 0.1)', label: '分流完成' },
+  STOCK_RESTOCK_AUTO: { color: '#FFB800', bg: 'rgba(255, 184, 0, 0.1)', label: '自动补货' },
+  RESTOCK_APPROVE: { color: '#00D4AA', bg: 'rgba(0, 212, 170, 0.1)', label: '审批通过' },
+  RESTOCK_REJECT: { color: '#FF4D4F', bg: 'rgba(255, 77, 79, 0.1)', label: '审批驳回' },
+  RESTOCK_DELIVERED: { color: '#2F54FF', bg: 'rgba(47, 84, 255, 0.1)', label: '配送完成' },
+  SCHEDULE_ADJUST: { color: '#9254DE', bg: 'rgba(146, 84, 222, 0.1)', label: '排片调整' },
+  WINDOW_ALL_OPEN_WARNING: { color: '#FF7A45', bg: 'rgba(255, 122, 69, 0.1)', label: '窗口告警' },
+};

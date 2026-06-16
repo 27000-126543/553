@@ -169,12 +169,18 @@ export interface AlertEvent {
   handlerName?: string;
 }
 
+export type GuidePathStatus = 'ACTIVE' | 'FADING' | 'COMPLETED';
+
 export interface GuidePath {
   id: string;
   from: Vec3;
   to: Vec3;
   points: Vec3[];
   active: boolean;
+  status: GuidePathStatus;
+  machineId: string;
+  windowId: string;
+  createdAt: number;
 }
 
 export interface SchedulingConflict {
@@ -185,6 +191,29 @@ export interface SchedulingConflict {
   gapMinutes: number;
   adjustedTime: number | null;
   notified: boolean;
+}
+
+export type DispatchEventType =
+  | 'QUEUE_WINDOW_OPEN'
+  | 'GUIDE_PATH_CREATE'
+  | 'GUIDE_PATH_COMPLETE'
+  | 'STOCK_RESTOCK_AUTO'
+  | 'RESTOCK_APPROVE'
+  | 'RESTOCK_REJECT'
+  | 'RESTOCK_DELIVERED'
+  | 'SCHEDULE_ADJUST'
+  | 'WINDOW_ALL_OPEN_WARNING';
+
+export interface DispatchEvent {
+  id: string;
+  type: DispatchEventType;
+  title: string;
+  description: string;
+  area: AreaType | 'SYSTEM';
+  targetId?: string;
+  relatedAlertId?: string;
+  timestamp: number;
+  operator: string;
 }
 
 export interface KPIData {

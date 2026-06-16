@@ -9,26 +9,30 @@ import {
   Check,
   X,
   ChevronRight,
+  ChevronDown,
 } from 'lucide-react';
 import { useTheaterStore } from '@/stores/useTheaterStore';
-import { COLORS, RESTOCK_STATUS_LABELS, QUEUE_THRESHOLD } from '@/constants/config';
+import { COLORS, RESTOCK_STATUS_LABELS, QUEUE_THRESHOLD, DISPATCH_EVENT_COLORS, AREA_LABELS } from '@/constants/config';
 import { cn, formatDateTime } from '@/utils';
 
 export default function RightPanel() {
-  const [activeTab, setActiveTab] = useState<'alerts' | 'scheduling' | 'approval'>('alerts');
+  const [activeTab, setActiveTab] = useState<'alerts' | 'scheduling' | 'approval' | 'dispatch'>('alerts');
   const alerts = useTheaterStore((s) => s.alerts);
   const conflicts = useTheaterStore((s) => s.schedulingConflicts);
   const orders = useTheaterStore((s) => s.restockOrders);
+  const dispatchEvents = useTheaterStore((s) => s.dispatchEvents);
   const acknowledgeAlert = useTheaterStore((s) => s.acknowledgeAlert);
   const resolveAlert = useTheaterStore((s) => s.resolveAlert);
   const adjustSchedulingConflict = useTheaterStore((s) => s.adjustSchedulingConflict);
   const approveRestockLevel = useTheaterStore((s) => s.approveRestockLevel);
   const rejectRestock = useTheaterStore((s) => s.rejectRestock);
+  const setFocusArea = useTheaterStore((s) => s.setFocusArea);
 
   const tabs = [
     { id: 'alerts', label: '告警中心', icon: AlertTriangle, count: alerts.filter(a => a.status !== 'RESOLVED').length },
     { id: 'scheduling', label: '排片调度', icon: Clock, count: conflicts.filter(c => !c.notified).length },
     { id: 'approval', label: '审批中心', icon: CheckCircle, count: orders.filter(o => ['MANAGER_PENDING', 'OPERATIONS_PENDING', 'STORE_PENDING'].includes(o.status)).length },
+    { id: 'dispatch', label: '调度日志', icon: User, count: dispatchEvents.length },
   ] as const;
 
   const activeAlerts = alerts
@@ -274,6 +278,99 @@ export default function RightPanel() {
               )}
             </motion.div>
           )}
+
+          {activeTab === 'dispatch' && (
+            <motion.div
+              key="dispatch"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-2"
+            >
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-text-secondary">
+                  共 {dispatchEvents.length} 条调度记录
+                </span>
+                <div className="flex gap-1">
+                  {Object.entries(DISPATCH_EVENT_COLORS).slice(0, 5).map(([type, info]) => (
+                    <span
+                      key={type}
+                      className="text-[9px] px-1.5 py-0.5 rounded"
+                      style={{ background: info.bg, color: info.color }}
+                    >
+                      {info.label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
+                {dispatchEvents.length === 0 ? (
+                  <div className="text-center py-12 text-text-muted">
+                    <Clock className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                    <p className="text-sm">暂无调度记录</p>
+                  </div>
+                ) : (
+                  dispatchEvents.map((event) => {
+                    const eventInfo = DISPATCH_EVENT_COLORS[event.type] || {
+                      color: COLORS.textMuted,
+                      bg: 'rgba(255,255,255,0.05)',
+                      label: event.type,
+                    };
+                    return (
+                      <div
+                        key={event.id}
+                        className="p-2.5 rounded-lg border border-border/40 glass hover:border-primary/30 transition-colors cursor-pointer"
+                        onClick={() => {
+                          if (event.area && event.area !== 'SYSTEM') {
+                            setFocusArea(event.area as any);
+                          }
+                        }}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2 flex-1 min-w-0">
+                            <span
+                              className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                              style={{ background: eventInfo.color }}
+                            />
+                            <span
+                              className="text-[10px] px-1.5 py-0.5 rounded flex-shrink-0 font-medium"
+                              style={{ background: eventInfo.bg, color: eventInfo.color }}
+                            >
+                              {eventInfo.label}
+                            </span>
+                            <span className="text-xs font-medium text-text truncate">
+                              {event.title}
+                            </span>
+                          </div>
+                        </div>
+                        <p className="text-[11px] text-text-secondary mt-1.5 ml-3.5 line-clamp-2">
+                          {event.description}
+                        </p>
+                        <div className="flex items-center justify-between mt-1.5 ml-3.5">
+                          <span className="text-[10px] text-text-muted">
+                            {AREA_LABELS[event.area] || event.area}
+                          </span>
+                          <span className="text-[10px] text-text-muted">
+                            {new Date(event.timestamp).toLocaleString('zh-CN', {
+                              month: '2-digit',
+                              day: '2-digit',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              second: '2-digit',
+                            })}
+                          </span>
+                        </div>
+                        <div className="ml-3.5 mt-1 flex items-center gap-1">
+                          <span className="text-[9px] text-text-muted">操作人:</span>
+                          <span className="text-[9px] text-primary">{event.operator}</span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </motion.div>
+          )}
         </AnimatePresence>
       </div>
     </motion.div>
@@ -288,6 +385,8 @@ interface ApprovalOrderCardProps {
 
 function ApprovalOrderCard({ order, onApprove, onReject }: ApprovalOrderCardProps) {
   const [comment, setComment] = useState('');
+  const [expanded, setExpanded] = useState(false);
+  const concessionItems = useTheaterStore((s) => s.concessionItems);
   const statusInfo = RESTOCK_STATUS_LABELS[order.status];
   const pendingLevel =
     order.status === 'MANAGER_PENDING'
@@ -298,10 +397,25 @@ function ApprovalOrderCard({ order, onApprove, onReject }: ApprovalOrderCardProp
       ? 3
       : null;
 
+  const getStockInfo = (sku: string) => {
+    return concessionItems.find((c) => c.sku === sku);
+  };
+
   return (
     <div className="p-3 rounded-xl border border-border/60 glass">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-bold text-text">{order.id}</span>
+      <div
+        className="flex items-center justify-between mb-2 cursor-pointer"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-bold text-text">{order.id}</span>
+          <ChevronDown
+            className={cn(
+              'w-3.5 h-3.5 text-text-muted transition-transform',
+              expanded ? 'rotate-180' : ''
+            )}
+          />
+        </div>
         <span
           className="text-[10px] px-2 py-0.5 rounded-full font-medium"
           style={{
@@ -314,18 +428,33 @@ function ApprovalOrderCard({ order, onApprove, onReject }: ApprovalOrderCardProp
         </span>
       </div>
 
-      <div className="space-y-1.5 mb-3">
-        {order.items.slice(0, 3).map((item, i) => (
-          <div key={i} className="flex items-center justify-between text-xs">
-            <span className="text-text-secondary">{item.name}</span>
-            <span className="text-text">× {item.quantity}</span>
-          </div>
-        ))}
-        {order.items.length > 3 && (
-          <div className="text-[10px] text-text-muted">
-            还有 {order.items.length - 3} 项...
-          </div>
-        )}
+      <div className="space-y-2 mb-3">
+        {order.items.map((item, i) => {
+          const stockInfo = getStockInfo(item.sku);
+          const isLow = stockInfo && stockInfo.currentStock <= stockInfo.safetyStock;
+          return (
+            <div key={i} className="text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-text-secondary">{item.name}</span>
+                <span className="text-text font-medium">× {item.quantity}</span>
+              </div>
+              {expanded && stockInfo && (
+                <div className="flex items-center justify-between mt-1.5 text-[10px] bg-bg-elevated/50 rounded px-2 py-1.5">
+                  <div className="flex items-center gap-3">
+                    <span className="text-text-muted">当前: <span className="text-text">{stockInfo.currentStock}</span></span>
+                    <span className="text-text-muted">安全线: <span className={isLow ? 'text-danger' : 'text-text'}>{stockInfo.safetyStock}</span></span>
+                  </div>
+                  {isLow && (
+                    <span className="text-danger flex items-center gap-0.5">
+                      <AlertTriangle className="w-2.5 h-2.5" />
+                      不足
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       <div className="flex items-center justify-between text-xs border-t border-border/40 pt-2 mb-2">
@@ -333,31 +462,70 @@ function ApprovalOrderCard({ order, onApprove, onReject }: ApprovalOrderCardProp
         <span className="font-bold text-gold">¥{order.totalAmount.toLocaleString()}</span>
       </div>
 
-      <div className="flex items-center gap-1 mb-2">
-        {[1, 2, 3].map((level) => {
-          const approval = order.approvals.find((a) => a.level === level);
-          const isPending = pendingLevel === level;
-          const isApproved = approval?.signedAt;
-          const label = level === 1 ? '卖品经理' : level === 2 ? '运营经理' : '店长';
-          return (
-            <div key={level} className="flex-1">
-              <div
-                className={cn(
-                  'h-1.5 rounded-full',
-                  isApproved
-                    ? 'bg-success'
-                    : isPending
-                    ? 'bg-warning animate-pulse'
-                    : 'bg-bg-elevated'
-                )}
-              />
-              <div className="text-[9px] text-center mt-1 text-text-muted">
-                {label}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      {expanded && (
+        <div className="mb-3 p-2 rounded-lg bg-bg-elevated/30 border border-border/40">
+          <div className="text-[10px] text-text-muted mb-2 flex items-center gap-1">
+            <Clock className="w-3 h-3" />
+            审批时间线
+          </div>
+          <div className="space-y-2">
+            {order.approvals.map((ap) => {
+              const isCompleted = !!ap.signedAt;
+              const isCurrent = pendingLevel === ap.level && !isCompleted;
+              return (
+                <div key={ap.level} className="flex items-start gap-2">
+                  <div
+                    className={cn(
+                      'w-2 h-2 rounded-full mt-0.5 flex-shrink-0',
+                      isCompleted
+                        ? 'bg-success'
+                        : isCurrent
+                        ? 'bg-warning animate-pulse'
+                        : 'bg-bg-elevated'
+                    )}
+                  />
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between">
+                      <span
+                        className={cn(
+                          'text-[11px] font-medium',
+                          isCompleted
+                            ? 'text-text'
+                            : isCurrent
+                            ? 'text-warning'
+                            : 'text-text-muted'
+                        )}
+                      >
+                        {ap.approverName}
+                      </span>
+                      {isCompleted && (
+                        <span className="text-[9px] text-success flex items-center gap-0.5">
+                          <Check className="w-2.5 h-2.5" />
+                          已通过
+                        </span>
+                      )}
+                      {isCurrent && (
+                        <span className="text-[9px] text-warning">待处理</span>
+                      )}
+                    </div>
+                    {isCompleted && ap.signedAt && (
+                      <div className="text-[9px] text-text-muted mt-0.5">
+                        {new Date(ap.signedAt).toLocaleString('zh-CN', {
+                          month: '2-digit',
+                          day: '2-digit',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                        {ap.comment && ` · ${ap.comment}`}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {pendingLevel && (
         <div className="space-y-2">

@@ -17,6 +17,7 @@ import type {
   VIPRoom,
   CameraMode,
   SchedulingConflict,
+  DispatchEvent,
 } from '@/types';
 import {
   generateBoxOfficeData,
@@ -61,6 +62,7 @@ interface TheaterState {
   guidePaths: GuidePath[];
   schedulingConflicts: SchedulingConflict[];
   kpiData: KPIData;
+  dispatchEvents: DispatchEvent[];
 
   simulationIntervalId: number | null;
 
@@ -89,6 +91,7 @@ interface TheaterState {
   detectSchedulingConflicts: () => void;
   adjustSchedulingConflict: (conflictId: string) => void;
   detectStockAlerts: () => void;
+  addDispatchEvent: (event: Omit<DispatchEvent, 'id' | 'timestamp'>) => void;
 
   updateKPI: () => void;
 }
@@ -118,6 +121,7 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
   guidePaths: [],
   schedulingConflicts: [],
   kpiData: generateKPIData(),
+  dispatchEvents: [],
 
   simulationIntervalId: null,
 
@@ -199,10 +203,24 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
         };
       });
 
+      let finalConcession = updatedConcession;
+      const deliveredOrderIds: string[] = [];
+
       const updatedOrders = state.restockOrders.map((order) => {
         if (order.status === 'DELIVERING' && order.delivery) {
           const newProgress = Math.min(1, order.delivery.progress + 0.005);
           if (newProgress >= 1) {
+            deliveredOrderIds.push(order.id);
+            finalConcession = finalConcession.map((item) => {
+              const orderItem = order.items.find((it) => it.sku === item.sku);
+              if (orderItem) {
+                return {
+                  ...item,
+                  currentStock: item.currentStock + orderItem.quantity,
+                };
+              }
+              return item;
+            });
             return {
               ...order,
               status: 'COMPLETED' as const,
@@ -220,8 +238,22 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
       set({
         ticketMachines: updatedMachines,
         hallRealtimeMap: { ...state.hallRealtimeMap, ...updatedRealtime },
-        concessionItems: updatedConcession,
+        concessionItems: finalConcession,
         restockOrders: updatedOrders,
+      });
+
+      deliveredOrderIds.forEach((orderId) => {
+        const order = state.restockOrders.find((o) => o.id === orderId);
+        if (order) {
+          get().addDispatchEvent({
+            type: 'RESTOCK_DELIVERED',
+            title: '补货配送完成',
+            description: `${order.items[0]?.name || '商品'}补货已送达，库存已自动补充`,
+            area: 'CONCESSION',
+            targetId: orderId,
+            operator: '系统自动',
+          });
+        }
       });
 
       get().detectQueueAlerts();
@@ -269,7 +301,8 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
       ),
     })),
 
-  approveRestockLevel: (orderId, level, comment) =>
+  approveRestockLevel: (orderId, level, comment) => {
+    let orderAfter: RestockOrder | null = null;
     set((state) => {
       const orders = state.restockOrders.map((order) => {
         if (order.id !== orderId) return order;
@@ -314,25 +347,63 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
           };
         }
 
-        return { ...order, approvals, status, delivery };
+        const result = { ...order, approvals, status, delivery };
+        orderAfter = result;
+        return result;
       });
       return { restockOrders: orders };
-    }),
+    });
 
-  rejectRestock: (orderId, level, comment) =>
-    set((state) => ({
-      restockOrders: state.restockOrders.map((order) =>
-        order.id === orderId
-          ? {
-              ...order,
-              status: 'REJECTED',
-              approvals: order.approvals.map((ap) =>
-                ap.level === level ? { ...ap, comment, signedAt: Date.now() } : ap
-              ),
-            }
-          : order
-      ),
-    })),
+    if (orderAfter) {
+      const levelLabels: Record<number, string> = {
+        1: '卖品经理',
+        2: '运营经理',
+        3: '店长',
+      };
+      get().addDispatchEvent({
+        type: 'RESTOCK_APPROVE',
+        title: `补货申请${levelLabels[level]}审批通过`,
+        description: `${orderAfter.items[0]?.name || '商品'}补货单${levelLabels[level]}级审批通过`,
+        area: 'CONCESSION',
+        targetId: orderAfter.id,
+        operator: levelLabels[level],
+      });
+    }
+  },
+
+  rejectRestock: (orderId, level, comment) => {
+    let orderAfter: RestockOrder | null = null;
+    set((state) => {
+      const orders = state.restockOrders.map((order) => {
+        if (order.id !== orderId) return order;
+        const result = {
+          ...order,
+          status: 'REJECTED' as const,
+          approvals: order.approvals.map((ap) =>
+            ap.level === level ? { ...ap, comment, signedAt: Date.now() } : ap
+          ),
+        };
+        orderAfter = result;
+        return result;
+      });
+      return { restockOrders: orders };
+    });
+    if (orderAfter) {
+      const levelLabels: Record<number, string> = {
+        1: '卖品经理',
+        2: '运营经理',
+        3: '店长',
+      };
+      get().addDispatchEvent({
+        type: 'RESTOCK_REJECT',
+        title: `补货申请被${levelLabels[level]}驳回`,
+        description: `${orderAfter.items[0]?.name || '商品'}补货单被${levelLabels[level]}驳回`,
+        area: 'CONCESSION',
+        targetId: orderAfter.id,
+        operator: levelLabels[level],
+      });
+    }
+  },
 
   openCounterWindow: (windowId) =>
     set((state) => ({
@@ -344,80 +415,170 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
   detectQueueAlerts: () => {
     const state = get();
     const now = Date.now();
-    const existingDescs = new Set(
-      state.alerts
-        .filter((a) => a.type === 'QUEUE' && a.status !== 'RESOLVED')
-        .map((a) => {
-          const match = a.description.match(/(\d+)号取票机/);
-          return match ? match[1] : '';
-        })
-    );
     const newAlerts: AlertEvent[] = [];
-
-    let updatedWindows = state.counterWindows;
+    let updatedWindows = [...state.counterWindows];
     let updatedPaths = [...state.guidePaths];
+    let allWindowsOpenNotified = false;
 
     state.ticketMachines.forEach((m) => {
-      if (m.queueLength < QUEUE_THRESHOLD.WARNING) return;
       if (m.status !== 'ONLINE') return;
 
       const machineNum = m.id.replace('tm-', '');
-      const desc = `${machineNum}号取票机排队人数达${m.queueLength}人`;
-
-      if (!existingDescs.has(machineNum)) {
-        newAlerts.push({
-          id: generateId('alert'),
-          type: 'QUEUE',
-          level: m.queueLength >= 15 ? 'CRITICAL' : 'WARNING',
-          title: '取票机排队告警',
-          description: desc,
-          location3d: m.position,
-          status: 'NEW',
-          createdAt: now,
-        });
-      }
-
-      const alreadyHasPath = updatedPaths.some(
-        (p) =>
-          p.active &&
-          Math.abs(p.from.x - m.position.x) < 0.5 &&
-          Math.abs(p.from.z - m.position.z) < 0.5
+      const hasActiveAlert = state.alerts.some(
+        (a) =>
+          a.type === 'QUEUE' &&
+          a.status !== 'RESOLVED' &&
+          a.description.includes(`${machineNum}号取票机`)
       );
 
-      if (!alreadyHasPath) {
-        const closedIdx = updatedWindows.findIndex((w) => !w.open);
-        if (closedIdx !== -1) {
-          updatedWindows = updatedWindows.map((w, i) =>
-            i === closedIdx ? { ...w, open: true } : w
-          );
-          const target = updatedWindows[closedIdx];
-          updatedPaths.push({
-            id: generateId('guide'),
-            from: m.position,
-            to: target.position,
-            points: [
-              m.position,
-              {
-                x: (m.position.x + target.position.x) / 2,
-                y: 0.3,
-                z: -13,
-              },
-              target.position,
-            ],
-            active: true,
-          });
+      const activePath = updatedPaths.find(
+        (p) => p.machineId === m.id && p.status === 'ACTIVE'
+      );
+
+      if (m.queueLength >= QUEUE_THRESHOLD.WARNING) {
+        if (!hasActiveAlert) {
+          const alert: AlertEvent = {
+            id: generateId('alert'),
+            type: 'QUEUE',
+            level: m.queueLength >= 15 ? 'CRITICAL' : 'WARNING',
+            title: '取票机排队告警',
+            description: `${machineNum}号取票机排队人数达${m.queueLength}人`,
+            location3d: m.position,
+            status: 'NEW',
+            createdAt: now,
+          };
+          newAlerts.push(alert);
         }
+
+        if (!activePath) {
+          const closedWindows = updatedWindows.filter((w) => !w.open);
+          let targetWindow: CounterWindow | undefined;
+
+          if (closedWindows.length > 0) {
+            const scored = closedWindows.map((w) => {
+              const dx = w.position.x - m.position.x;
+              const dz = w.position.z - m.position.z;
+              const dist = Math.sqrt(dx * dx + dz * dz);
+              return { window: w, score: -dist + w.queueLength * 0.5 };
+            });
+            scored.sort((a, b) => b.score - a.score);
+            targetWindow = scored[0].window;
+
+            updatedWindows = updatedWindows.map((w) =>
+              w.id === targetWindow!.id ? { ...w, open: true } : w
+            );
+
+            get().addDispatchEvent({
+              type: 'QUEUE_WINDOW_OPEN',
+              title: '自动增开人工窗口',
+              description: `${machineNum}号取票机排队拥堵，自动开启${targetWindow.name}`,
+              area: 'TICKETING',
+              targetId: targetWindow.id,
+              operator: '系统自动',
+            });
+          } else {
+            if (!state.alerts.some((a) => a.type === 'QUEUE' && a.title === '所有窗口已开启')) {
+              allWindowsOpenNotified = true;
+            }
+            targetWindow = updatedWindows.reduce((best, w) => {
+              if (!best) return w;
+              return w.queueLength < best.queueLength ? w : best;
+            }, undefined as CounterWindow | undefined);
+          }
+
+          if (targetWindow) {
+            const fromPos = { ...m.position, y: 0.1 };
+            const toPos = { ...targetWindow.position, y: 0.1 };
+            const midPos = {
+              x: (fromPos.x + toPos.x) / 2,
+              y: 0.3,
+              z: -13,
+            };
+
+            const newPath: GuidePath = {
+              id: generateId('guide'),
+              from: fromPos,
+              to: toPos,
+              points: [fromPos, midPos, toPos],
+              active: true,
+              status: 'ACTIVE',
+              machineId: m.id,
+              windowId: targetWindow.id,
+              createdAt: now,
+            };
+            updatedPaths.push(newPath);
+
+            get().addDispatchEvent({
+              type: 'GUIDE_PATH_CREATE',
+              title: '生成分流引导路径',
+              description: `${machineNum}号取票机 → ${targetWindow.name}`,
+              area: 'TICKETING',
+              targetId: newPath.id,
+              operator: '系统自动',
+            });
+          }
+        }
+      } else if (m.queueLength < QUEUE_THRESHOLD.RESOLVE && activePath) {
+        updatedPaths = updatedPaths.map((p) =>
+          p.id === activePath.id ? { ...p, status: 'COMPLETED' as const, active: false } : p
+        );
+
+        const alertToResolve = state.alerts.find(
+          (a) =>
+            a.type === 'QUEUE' &&
+            a.status !== 'RESOLVED' &&
+            a.description.includes(`${machineNum}号取票机`)
+        );
+        if (alertToResolve) {
+          newAlerts.push({ ...alertToResolve, status: 'RESOLVED' });
+        }
+
+        get().addDispatchEvent({
+          type: 'GUIDE_PATH_COMPLETE',
+          title: '分流引导完成',
+          description: `${machineNum}号取票机排队已恢复正常`,
+          area: 'TICKETING',
+          targetId: activePath.id,
+          operator: '系统自动',
+        });
       }
     });
 
+    if (allWindowsOpenNotified) {
+      newAlerts.push({
+        id: generateId('alert-w'),
+        type: 'QUEUE',
+        level: 'WARNING',
+        title: '所有窗口已开启',
+        description: '当前所有人工窗口均已开放，仍有取票机排队拥堵，请考虑增加临时窗口',
+        location3d: { x: 0, y: 0, z: -14 },
+        status: 'NEW',
+        createdAt: now,
+      });
+      get().addDispatchEvent({
+        type: 'WINDOW_ALL_OPEN_WARNING',
+        title: '窗口资源告警',
+        description: '所有人工窗口已全开，仍有取票机拥堵',
+        area: 'TICKETING',
+        operator: '系统自动',
+      });
+    }
+
+    updatedPaths = updatedPaths.filter((p) => p.status === 'ACTIVE');
+
     const updates: Partial<TheaterState> = {};
     if (newAlerts.length) {
-      updates.alerts = [...newAlerts, ...state.alerts];
+      const existingIds = new Set(state.alerts.map((a) => a.id));
+      const finalAlerts = [
+        ...newAlerts.filter((a) => !existingIds.has(a.id)),
+        ...state.alerts,
+      ];
+      updates.alerts = finalAlerts;
     }
-    if (updatedWindows !== state.counterWindows) {
+    if (JSON.stringify(updatedWindows) !== JSON.stringify(state.counterWindows)) {
       updates.counterWindows = updatedWindows;
     }
-    if (updatedPaths.length !== state.guidePaths.length) {
+    if (JSON.stringify(updatedPaths) !== JSON.stringify(state.guidePaths)) {
       updates.guidePaths = updatedPaths;
     }
     if (Object.keys(updates).length) {
@@ -509,6 +670,16 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
         restockOrders: [...newOrders, ...s.restockOrders],
         alerts: [...newAlerts, ...s.alerts],
       }));
+      newOrders.forEach((order) => {
+        get().addDispatchEvent({
+          type: 'STOCK_RESTOCK_AUTO',
+          title: '自动生成补货申请',
+          description: `${order.items[0]?.name || '商品'}库存不足，已自动生成补货申请`,
+          area: 'CONCESSION',
+          targetId: order.id,
+          operator: '系统自动',
+        });
+      });
     }
   },
 
@@ -565,13 +736,17 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
     }
   },
 
-  adjustSchedulingConflict: (conflictId) =>
+  adjustSchedulingConflict: (conflictId) => {
+    let conflictHallName = '';
+    let conflictGap = 0;
     set((state) => {
       const conflict = state.schedulingConflicts.find((c) => c.id === conflictId);
       if (!conflict) return {};
 
       const adjustedMins = SCHEDULING.MIN_GAP_MINUTES - conflict.gapMinutes + 5;
       const hallName = state.halls.find((h) => h.id === conflict.hallId)?.name || '';
+      conflictHallName = hallName;
+      conflictGap = conflict.gapMinutes;
 
       const updatedAlerts = state.alerts.map((a) => {
         if (
@@ -602,7 +777,30 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
         ),
         alerts: updatedAlerts,
       };
-    }),
+    });
+
+    if (conflictHallName) {
+      get().addDispatchEvent({
+        type: 'SCHEDULE_ADJUST',
+        title: '排片冲突自动调整',
+        description: `${conflictHallName}场次间隔${conflictGap}分钟，已自动推后调整`,
+        area: 'HALLS',
+        targetId: conflictId,
+        operator: '系统自动',
+      });
+    }
+  },
+
+  addDispatchEvent: (event) => {
+    const newEvent: DispatchEvent = {
+      ...event,
+      id: generateId('evt'),
+      timestamp: Date.now(),
+    };
+    set((state) => ({
+      dispatchEvents: [newEvent, ...state.dispatchEvents].slice(0, 100),
+    }));
+  },
 
   updateKPI: () => {
     const state = get();
