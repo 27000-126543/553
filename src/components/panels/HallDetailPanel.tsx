@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Film,
@@ -23,14 +24,19 @@ export default function HallDetailPanel() {
   const selectedHallId = useTheaterStore((s) => s.selectedHallId);
   const setSelectedHall = useTheaterStore((s) => s.setSelectedHall);
   const setSelectedDetail = useTheaterStore((s) => s.setSelectedDetail);
-  const hall = useTheaterStore((s) => s.halls.find((h) => h.id === selectedHallId));
-  const realtime = useTheaterStore((s) => s.hallRealtimeMap[selectedHallId || '']);
-  const showtimes = useTheaterStore((s) =>
-    s.showtimes.filter((st) => st.hallId === selectedHallId)
-  );
+  const halls = useTheaterStore((s) => s.halls);
+  const hallRealtimeMap = useTheaterStore((s) => s.hallRealtimeMap);
+  const allShowtimes = useTheaterStore((s) => s.showtimes);
   const boxOfficeData = useTheaterStore((s) => s.boxOfficeData);
   const panelOpen = useTheaterStore((s) => s.panelOpen);
   const togglePanel = useTheaterStore((s) => s.togglePanel);
+
+  const hall = useMemo(() => halls.find((h) => h.id === selectedHallId), [halls, selectedHallId]);
+  const realtime = hallRealtimeMap[selectedHallId || ''];
+  const showtimes = useMemo(
+    () => allShowtimes.filter((st) => st.hallId === selectedHallId),
+    [allShowtimes, selectedHallId]
+  );
 
   const isOpen = panelOpen && selectedHallId;
 

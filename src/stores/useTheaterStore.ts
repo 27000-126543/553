@@ -88,6 +88,7 @@ interface TheaterState {
   detectQueueAlerts: () => void;
   detectSchedulingConflicts: () => void;
   adjustSchedulingConflict: (conflictId: string) => void;
+  detectStockAlerts: () => void;
 
   updateKPI: () => void;
 }
@@ -153,6 +154,7 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
     });
 
     get().detectQueueAlerts();
+    get().detectStockAlerts();
     get().detectSchedulingConflicts();
   },
 
@@ -223,6 +225,7 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
       });
 
       get().detectQueueAlerts();
+      get().detectStockAlerts();
       get().updateKPI();
     }, 3000);
 
@@ -270,6 +273,18 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
     set((state) => {
       const orders = state.restockOrders.map((order) => {
         if (order.id !== orderId) return order;
+
+        const expectedLevel =
+          order.status === 'MANAGER_PENDING'
+            ? 1
+            : order.status === 'OPERATIONS_PENDING'
+            ? 2
+            : order.status === 'STORE_PENDING'
+            ? 3
+            : null;
+
+        if (level !== expectedLevel) return order;
+
         const approvals = order.approvals.map((ap) =>
           ap.level === level
             ? { ...ap, comment, signedAt: Date.now() }
@@ -281,12 +296,9 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
         if (level === 2) status = 'STORE_PENDING';
         if (level === 3) status = 'APPROVED';
 
+        let delivery = order.delivery;
         if (status === 'APPROVED') {
           status = 'DELIVERING';
-        }
-
-        let delivery = order.delivery;
-        if (level === 3 && !order.delivery) {
           delivery = {
             carrier: '顺丰冷链',
             eta: Date.now() + 60 * 60 * 1000,
@@ -327,54 +339,176 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
       counterWindows: state.counterWindows.map((w) =>
         w.id === windowId ? { ...w, open: true } : w
       ),
-      guidePaths: state.guidePaths.length
-        ? state.guidePaths
-        : state.ticketMachines
-            .filter((m) => m.queueLength >= QUEUE_THRESHOLD.WARNING)
-            .map((m) => {
-              const target = state.counterWindows.find((cw) => cw.id === windowId);
-              return {
-                id: generateId('guide'),
-                from: m.position,
-                to: target?.position || { x: 0, y: 0, z: -14 },
-                points: [
-                  m.position,
-                  { x: (m.position.x + (target?.position.x || 0)) / 2, y: 0.3, z: -13 },
-                  target?.position || { x: 0, y: 0, z: -14 },
-                ],
-                active: true,
-              };
-            }),
     })),
 
   detectQueueAlerts: () => {
     const state = get();
     const now = Date.now();
-    const existingIds = new Set(
-      state.alerts.filter((a) => a.type === 'QUEUE').map((a) => a.description)
+    const existingDescs = new Set(
+      state.alerts
+        .filter((a) => a.type === 'QUEUE' && a.status !== 'RESOLVED')
+        .map((a) => {
+          const match = a.description.match(/(\d+)号取票机/);
+          return match ? match[1] : '';
+        })
     );
     const newAlerts: AlertEvent[] = [];
 
+    let updatedWindows = state.counterWindows;
+    let updatedPaths = [...state.guidePaths];
+
     state.ticketMachines.forEach((m) => {
-      if (m.queueLength >= QUEUE_THRESHOLD.WARNING) {
-        const desc = `${m.id.replace('tm-', '')}号取票机排队人数达${m.queueLength}人`;
-        if (!existingIds.has(desc)) {
-          newAlerts.push({
-            id: generateId('alert'),
-            type: 'QUEUE',
-            level: 'WARNING',
-            title: '取票机排队告警',
-            description: desc,
-            location3d: m.position,
-            status: 'NEW',
-            createdAt: now,
+      if (m.queueLength < QUEUE_THRESHOLD.WARNING) return;
+      if (m.status !== 'ONLINE') return;
+
+      const machineNum = m.id.replace('tm-', '');
+      const desc = `${machineNum}号取票机排队人数达${m.queueLength}人`;
+
+      if (!existingDescs.has(machineNum)) {
+        newAlerts.push({
+          id: generateId('alert'),
+          type: 'QUEUE',
+          level: m.queueLength >= 15 ? 'CRITICAL' : 'WARNING',
+          title: '取票机排队告警',
+          description: desc,
+          location3d: m.position,
+          status: 'NEW',
+          createdAt: now,
+        });
+      }
+
+      const alreadyHasPath = updatedPaths.some(
+        (p) =>
+          p.active &&
+          Math.abs(p.from.x - m.position.x) < 0.5 &&
+          Math.abs(p.from.z - m.position.z) < 0.5
+      );
+
+      if (!alreadyHasPath) {
+        const closedIdx = updatedWindows.findIndex((w) => !w.open);
+        if (closedIdx !== -1) {
+          updatedWindows = updatedWindows.map((w, i) =>
+            i === closedIdx ? { ...w, open: true } : w
+          );
+          const target = updatedWindows[closedIdx];
+          updatedPaths.push({
+            id: generateId('guide'),
+            from: m.position,
+            to: target.position,
+            points: [
+              m.position,
+              {
+                x: (m.position.x + target.position.x) / 2,
+                y: 0.3,
+                z: -13,
+              },
+              target.position,
+            ],
+            active: true,
           });
         }
       }
     });
 
+    const updates: Partial<TheaterState> = {};
     if (newAlerts.length) {
-      set((s) => ({ alerts: [...newAlerts, ...s.alerts] }));
+      updates.alerts = [...newAlerts, ...state.alerts];
+    }
+    if (updatedWindows !== state.counterWindows) {
+      updates.counterWindows = updatedWindows;
+    }
+    if (updatedPaths.length !== state.guidePaths.length) {
+      updates.guidePaths = updatedPaths;
+    }
+    if (Object.keys(updates).length) {
+      set(updates as any);
+    }
+  },
+
+  detectStockAlerts: () => {
+    const state = get();
+    const now = Date.now();
+    const pendingStatuses: RestockOrder['status'][] = [
+      'MANAGER_PENDING',
+      'OPERATIONS_PENDING',
+      'STORE_PENDING',
+      'DELIVERING',
+    ];
+    const skusWithPendingOrder = new Set(
+      state.restockOrders
+        .filter((o) => pendingStatuses.includes(o.status))
+        .flatMap((o) => o.items.map((it) => it.sku))
+    );
+
+    const newOrders: RestockOrder[] = [];
+    const newAlerts: AlertEvent[] = [];
+
+    state.concessionItems.forEach((item) => {
+      if (item.currentStock > item.safetyStock) return;
+      if (skusWithPendingOrder.has(item.sku)) return;
+
+      const quantity = item.safetyStock * 2;
+      const unitPrice = Math.round(item.unitPrice * 0.6 * 100) / 100;
+
+      newOrders.push({
+        id: generateId('RO'),
+        items: [{ sku: item.sku, name: item.name, quantity, unitPrice }],
+        totalAmount: Math.round(quantity * unitPrice * 100) / 100,
+        status: 'MANAGER_PENDING',
+        applicantId: 'system',
+        applicantName: '系统自动',
+        approvals: [
+          {
+            level: 1,
+            approverId: 'cm-1',
+            approverName: '刘经理(卖品经理)',
+            comment: '',
+            signedAt: null,
+          },
+          {
+            level: 2,
+            approverId: 'om-1',
+            approverName: '赵总监(运营经理)',
+            comment: '',
+            signedAt: null,
+          },
+          {
+            level: 3,
+            approverId: 'sm-1',
+            approverName: '孙店长',
+            comment: '',
+            signedAt: null,
+          },
+        ],
+        delivery: null,
+        createdAt: now,
+      });
+
+      const existingAlert = state.alerts.find(
+        (a) =>
+          a.type === 'STOCK' &&
+          a.status !== 'RESOLVED' &&
+          a.description.includes(item.name)
+      );
+      if (!existingAlert) {
+        newAlerts.push({
+          id: generateId('alert-stock'),
+          type: 'STOCK',
+          level: item.currentStock <= item.dangerStock ? 'CRITICAL' : 'WARNING',
+          title: `${item.name}库存不足`,
+          description: `当前库存${item.currentStock}，安全库存${item.safetyStock}，已自动生成补货申请`,
+          location3d: item.position,
+          status: 'NEW',
+          createdAt: now,
+        });
+      }
+    });
+
+    if (newOrders.length || newAlerts.length) {
+      set((s) => ({
+        restockOrders: [...newOrders, ...s.restockOrders],
+        alerts: [...newAlerts, ...s.alerts],
+      }));
     }
   },
 
@@ -437,6 +571,20 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
       if (!conflict) return {};
 
       const adjustedMins = SCHEDULING.MIN_GAP_MINUTES - conflict.gapMinutes + 5;
+      const hallName = state.halls.find((h) => h.id === conflict.hallId)?.name || '';
+
+      const updatedAlerts = state.alerts.map((a) => {
+        if (
+          a.type === 'SCHEDULE' &&
+          a.status !== 'RESOLVED' &&
+          a.description.includes(hallName) &&
+          a.description.includes(`${conflict.gapMinutes}分钟`)
+        ) {
+          return { ...a, status: 'RESOLVED' as const };
+        }
+        return a;
+      });
+
       return {
         schedulingConflicts: state.schedulingConflicts.map((c) =>
           c.id === conflictId
@@ -452,6 +600,7 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
               }
             : s
         ),
+        alerts: updatedAlerts,
       };
     }),
 

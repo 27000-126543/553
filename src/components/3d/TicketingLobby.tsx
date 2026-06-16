@@ -13,7 +13,6 @@ import { useTheaterStore as _ts } from '@/stores/useTheaterStore';
 export default function TicketingLobby() {
   const ticketMachines = useTheaterStore((s) => s.ticketMachines);
   const counterWindows = useTheaterStore((s) => s.counterWindows);
-  const openCounterWindow = useTheaterStore((s) => s.openCounterWindow);
 
   return (
     <group name="ticketing-lobby" position={[0, 0, -14]}>
@@ -42,7 +41,6 @@ export default function TicketingLobby() {
             key={cw.id}
             window={cw}
             index={idx}
-            onOpen={() => openCounterWindow(cw.id)}
           />
         ))}
       </group>
@@ -232,29 +230,18 @@ function TicketMachineUnit({ machine, index }: MachineProps) {
 interface WindowProps {
   window: ReturnType<typeof _ts.getState>['counterWindows'][number];
   index: number;
-  onOpen: () => void;
 }
 
-function CounterWindowUnit({ window: cw, index, onOpen }: WindowProps) {
+function CounterWindowUnit({ window: cw, index }: WindowProps) {
   const [hovered, setHovered] = useState(false);
-  const needsOpen = useTheaterStore(
-    (s) =>
-      s.ticketMachines.some((m) => m.queueLength >= QUEUE_THRESHOLD.WARNING) &&
-      !cw.open
-  );
 
   return (
     <group
       position={[cw.position.x + 8, 0, cw.position.z + 13]}
-      onClick={(e) => {
-        e.stopPropagation();
-        if (!cw.open && needsOpen) onOpen();
-      }}
       onPointerOver={(e) => {
         e.stopPropagation();
         setHovered(true);
-        if ((!cw.open && needsOpen) || cw.open)
-          document.body.style.cursor = 'pointer';
+        if (cw.open) document.body.style.cursor = 'pointer';
       }}
       onPointerOut={() => {
         setHovered(false);
@@ -273,9 +260,9 @@ function CounterWindowUnit({ window: cw, index, onOpen }: WindowProps) {
       <mesh position={[0, 1.5, 0.31]}>
         <planeGeometry args={[1.6, 0.8]} />
         <meshStandardMaterial
-          color={cw.open ? '#002a1a' : '#2a1a00'}
-          emissive={cw.open ? COLORS.success : needsOpen ? COLORS.warning : COLORS.textMuted}
-          emissiveIntensity={cw.open ? 0.5 : needsOpen && hovered ? 0.6 : 0.2}
+          color={cw.open ? '#002a1a' : '#1a1a1a'}
+          emissive={cw.open ? COLORS.success : COLORS.textMuted}
+          emissiveIntensity={cw.open ? 0.5 : hovered ? 0.3 : 0.15}
         />
       </mesh>
 
@@ -286,22 +273,14 @@ function CounterWindowUnit({ window: cw, index, onOpen }: WindowProps) {
               className="rounded-md px-2 py-1.5 text-center backdrop-blur-md border"
               style={{
                 background: 'rgba(10, 22, 40, 0.9)',
-                borderColor: cw.open
-                  ? COLORS.success
-                  : needsOpen
-                  ? COLORS.warning
-                  : COLORS.border,
+                borderColor: cw.open ? COLORS.success : COLORS.border,
                 minWidth: '90px',
               }}
             >
               <div
                 className="text-[10px] font-bold"
                 style={{
-                  color: cw.open
-                    ? COLORS.success
-                    : needsOpen
-                    ? COLORS.warning
-                    : COLORS.textMuted,
+                  color: cw.open ? COLORS.success : COLORS.textMuted,
                 }}
               >
                 {cw.name}
@@ -309,17 +288,11 @@ function CounterWindowUnit({ window: cw, index, onOpen }: WindowProps) {
               <div
                 className="text-[9px] mt-0.5"
                 style={{
-                  color: cw.open
-                    ? COLORS.textSecondary
-                    : COLORS.textMuted,
+                  color: cw.open ? COLORS.textSecondary : COLORS.textMuted,
                 }}
               >
                 {cw.open
                   ? `服务中 · ${cw.queueLength}人`
-                  : needsOpen
-                  ? hovered
-                    ? '🖱️ 点击启用'
-                    : '⚠️ 建议开启'
                   : '关闭'}
               </div>
             </div>
