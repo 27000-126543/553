@@ -9,6 +9,7 @@ import {
   QUEUE_THRESHOLD,
 } from '@/constants/config';
 import { useTheaterStore as _ts } from '@/stores/useTheaterStore';
+import GuideArrows from './GuideArrows';
 
 export default function TicketingLobby() {
   const ticketMachines = useTheaterStore((s) => s.ticketMachines);
@@ -16,8 +17,8 @@ export default function TicketingLobby() {
 
   return (
     <group name="ticketing-lobby" position={[0, 0, -14]}>
-      <mesh position={[0, 0.05, 0]}>
-        <boxGeometry args={[50, 0.1, 10]} />
+      <mesh position={[0, 0.05, 1.5]}>
+        <boxGeometry args={[50, 0.1, 12]} />
         <meshStandardMaterial
           color={COLORS.surfaceElevated}
           metalness={0.3}
@@ -35,7 +36,7 @@ export default function TicketingLobby() {
         ))}
       </group>
 
-      <group position={[0, 0, 1]}>
+      <group position={[0, 0, 0]}>
         {counterWindows.map((cw, idx) => (
           <CounterWindowUnit
             key={cw.id}
@@ -44,6 +45,8 @@ export default function TicketingLobby() {
           />
         ))}
       </group>
+
+      <GuideArrows />
 
       <group position={[0, 3.8, -4]}>
         <mesh>
@@ -107,7 +110,7 @@ function TicketMachineUnit({ machine, index }: MachineProps) {
   return (
     <group
       ref={meshRef}
-      position={[machine.position.x + 22, 0, machine.position.z + 14]}
+      position={[machine.position.x, 0, machine.position.z]}
       onClick={(e) => {
         e.stopPropagation();
         setSelectedDetail('MACHINE', isSelected ? null : machine.id);
@@ -237,7 +240,7 @@ function CounterWindowUnit({ window: cw, index }: WindowProps) {
 
   return (
     <group
-      position={[cw.position.x + 8, 0, cw.position.z + 13]}
+      position={[cw.position.x, 0, cw.position.z]}
       onPointerOver={(e) => {
         e.stopPropagation();
         setHovered(true);

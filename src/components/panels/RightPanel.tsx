@@ -17,6 +17,7 @@ import { cn, formatDateTime } from '@/utils';
 
 export default function RightPanel() {
   const [activeTab, setActiveTab] = useState<'alerts' | 'scheduling' | 'approval' | 'dispatch'>('alerts');
+  const [filteredAlertId, setFilteredAlertId] = useState<string | null>(null);
   const alerts = useTheaterStore((s) => s.alerts);
   const conflicts = useTheaterStore((s) => s.schedulingConflicts);
   const orders = useTheaterStore((s) => s.restockOrders);
@@ -36,8 +37,32 @@ export default function RightPanel() {
   ] as const;
 
   const activeAlerts = alerts
-    .filter((a) => a.status !== 'RESOLVED')
+    .filter((a) => {
+      if (filteredAlertId) return a.id === filteredAlertId || a.id === filteredAlertId;
+      return a.status !== 'RESOLVED';
+    })
     .sort((a, b) => b.createdAt - a.createdAt);
+
+  const handleDispatchEventClick = (event: any) => {
+    if (event.area && event.area !== 'SYSTEM') {
+      setFocusArea(event.area as any);
+    }
+
+    const alertRelatedTypes = ['QUEUE_WINDOW_OPEN', 'GUIDE_PATH_CREATE', 'GUIDE_PATH_COMPLETE', 'WINDOW_ALL_OPEN_WARNING'];
+    const approvalRelatedTypes = ['STOCK_RESTOCK_AUTO', 'RESTOCK_APPROVE', 'RESTOCK_REJECT', 'RESTOCK_DELIVERED'];
+    const scheduleRelatedTypes = ['SCHEDULE_ADJUST'];
+
+    if (alertRelatedTypes.includes(event.type)) {
+      setActiveTab('alerts');
+      setFilteredAlertId(event.relatedAlertId || null);
+    } else if (approvalRelatedTypes.includes(event.type)) {
+      setActiveTab('approval');
+      setFilteredAlertId(null);
+    } else if (scheduleRelatedTypes.includes(event.type)) {
+      setActiveTab('scheduling');
+      setFilteredAlertId(null);
+    }
+  };
 
   return (
     <motion.div
@@ -88,6 +113,17 @@ export default function RightPanel() {
               exit={{ opacity: 0, y: -10 }}
               className="space-y-2.5"
             >
+              {filteredAlertId && (
+                <div className="p-2 rounded-lg bg-primary/10 border border-primary/30 flex items-center justify-between">
+                  <span className="text-xs text-primary">正在筛选相关告警</span>
+                  <button
+                    onClick={() => setFilteredAlertId(null)}
+                    className="text-xs text-primary hover:text-primary/80 font-medium"
+                  >
+                    清除筛选
+                  </button>
+                </div>
+              )}
               {activeAlerts.length === 0 ? (
                 <div className="text-center py-12 text-text-muted">
                   <CheckCircle className="w-12 h-12 mx-auto mb-3 opacity-30" />
@@ -320,11 +356,7 @@ export default function RightPanel() {
                       <div
                         key={event.id}
                         className="p-2.5 rounded-lg border border-border/40 glass hover:border-primary/30 transition-colors cursor-pointer"
-                        onClick={() => {
-                          if (event.area && event.area !== 'SYSTEM') {
-                            setFocusArea(event.area as any);
-                          }
-                        }}
+                        onClick={() => handleDispatchEventClick(event)}
                       >
                         <div className="flex items-start justify-between gap-2">
                           <div className="flex items-center gap-2 flex-1 min-w-0">

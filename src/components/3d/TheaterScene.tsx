@@ -1,6 +1,6 @@
-import { useRef } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, Stars } from '@react-three/drei';
+import { useRef, useEffect, useMemo } from 'react';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { Stars, OrbitControls } from '@react-three/drei';
 import { EffectComposer, Bloom, Vignette, SMAA } from '@react-three/postprocessing';
 import * as THREE from 'three';
 import { useTheaterStore } from '@/stores/useTheaterStore';
@@ -13,8 +13,17 @@ import ProjectionRoom from './ProjectionRoom';
 import ControlCenter from './ControlCenter';
 import AlertMarkers from './AlertMarkers';
 import DeliverySystem from './DeliverySystem';
-import GuideArrows from './GuideArrows';
 import { COLORS } from '@/constants/config';
+
+const AREA_CAMERA_CONFIG: Record<string, { target: [number, number, number]; offset: [number, number, number] }> = {
+  HALLS: { target: [0, 3, 0], offset: [0, 18, 30] },
+  TICKETING: { target: [0, 3, -14], offset: [0, 12, -2] },
+  CONCESSION: { target: [0, 3, -10], offset: [0, 12, 2] },
+  VIP: { target: [0, 5.5, 0], offset: [0, 12, 15] },
+  PROJECTION: { target: [0, 3, 18], offset: [0, 12, 6] },
+  CONTROL: { target: [0, 10, 8], offset: [0, 15, 20] },
+  DEFAULT: { target: [0, 3, 0], offset: [0, 22, 45] },
+};
 
 function Ground() {
   return (
@@ -62,14 +71,50 @@ function TheaterLighting() {
 
 function AutoRotateRig() {
   const cameraMode = useTheaterStore((s) => s.cameraMode);
+  const focusArea = useTheaterStore((s) => s.focusArea);
+  const setFocusArea = useTheaterStore((s) => s.setFocusArea);
   const controlsRef = useRef<any>(null);
+  const { camera } = useThree();
+
+  const targetPos = useMemo(() => new THREE.Vector3(), []);
+  const targetLookAt = useMemo(() => new THREE.Vector3(), []);
+  const animatingRef = useRef(false);
+
+  useEffect(() => {
+    if (!controlsRef.current) return;
+
+    const configKey = focusArea || 'DEFAULT';
+    const config = AREA_CAMERA_CONFIG[configKey] || AREA_CAMERA_CONFIG.DEFAULT;
+
+    targetLookAt.set(config.target[0], config.target[1], config.target[2]);
+    targetPos.set(
+      config.target[0] + config.offset[0],
+      config.target[1] + config.offset[1],
+      config.target[2] + config.offset[2]
+    );
+    animatingRef.current = true;
+  }, [focusArea, targetPos, targetLookAt]);
 
   useFrame((_, delta) => {
-    if (cameraMode === 'AUTO_ROTATE' && controlsRef.current) {
+    if (!controlsRef.current) return;
+
+    if (cameraMode === 'AUTO_ROTATE' && !animatingRef.current) {
       controlsRef.current.autoRotate = true;
       controlsRef.current.autoRotateSpeed = 0.5;
-    } else if (controlsRef.current) {
+    } else {
       controlsRef.current.autoRotate = false;
+    }
+
+    if (animatingRef.current) {
+      camera.position.lerp(targetPos, 0.05);
+      controlsRef.current.target.lerp(targetLookAt, 0.05);
+      controlsRef.current.update();
+
+      const distToTarget = camera.position.distanceTo(targetPos);
+      const distToLookAt = controlsRef.current.target.distanceTo(targetLookAt);
+      if (distToTarget < 0.1 && distToLookAt < 0.1) {
+        animatingRef.current = false;
+      }
     }
   });
 
@@ -83,6 +128,10 @@ function AutoRotateRig() {
       minDistance={10}
       maxDistance={80}
       target={[0, 3, 0]}
+      onEnd={() => {
+        if (animatingRef.current) return;
+        if (focusArea) setFocusArea(null);
+      }}
     />
   );
 }
@@ -107,10 +156,9 @@ function SceneRoot() {
           <ControlCenter />
           <AlertMarkers />
           <DeliverySystem />
-          <GuideArrows />
         </>
       )}
-      <EffectComposer multisampling={0} enableNormalPass={false}>
+      <EffectComposer multisampling={0}>
         <Bloom
           intensity={0.6}
           luminanceThreshold={0.2}

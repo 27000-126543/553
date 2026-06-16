@@ -244,7 +244,7 @@ export function generateTicketMachines(): TicketMachine[] {
         ? 8
         : Math.floor(Math.random() * 9),
       paperRemaining: Math.floor(15 + Math.random() * 85),
-      position: { x: -22 + i * 2.5, y: 0, z: -14 },
+      position: { x: -8.75 + i * 2.5, y: 0, z: 0 },
     });
   }
   return machines;
@@ -258,7 +258,7 @@ export function generateCounterWindows(): CounterWindow[] {
       name: `人工窗口${i + 1}`,
       open: i < 2,
       queueLength: i < 2 ? Math.floor(Math.random() * 6) : 0,
-      position: { x: -8 + i * 2.5, y: 0, z: -14 },
+      position: { x: -5 + i * 2.5, y: 0, z: 3 },
     });
   }
   return windows;

@@ -14,6 +14,7 @@ import type {
   RestockOrder,
   Showtime,
   TicketMachine,
+  Vec3,
   VIPRoom,
   CameraMode,
   SchedulingConflict,
@@ -94,6 +95,16 @@ interface TheaterState {
   addDispatchEvent: (event: Omit<DispatchEvent, 'id' | 'timestamp'>) => void;
 
   updateKPI: () => void;
+}
+
+export const TICKETING_LOBBY_OFFSET = { x: 0, y: 0, z: -14 };
+
+function toGlobal(localPos: Vec3): Vec3 {
+  return {
+    x: localPos.x + TICKETING_LOBBY_OFFSET.x,
+    y: localPos.y + TICKETING_LOBBY_OFFSET.y,
+    z: localPos.z + TICKETING_LOBBY_OFFSET.z,
+  };
 }
 
 export const useTheaterStore = create<TheaterState>((set, get) => ({
@@ -235,25 +246,46 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
         return order;
       });
 
-      set({
-        ticketMachines: updatedMachines,
-        hallRealtimeMap: { ...state.hallRealtimeMap, ...updatedRealtime },
-        concessionItems: finalConcession,
-        restockOrders: updatedOrders,
-      });
-
+      const alertsToResolve: AlertEvent[] = [];
       deliveredOrderIds.forEach((orderId) => {
         const order = state.restockOrders.find((o) => o.id === orderId);
         if (order) {
+          const itemName = order.items[0]?.name;
+          const relatedAlert = state.alerts.find(
+            (a) =>
+              a.type === 'STOCK' &&
+              a.status !== 'RESOLVED' &&
+              itemName &&
+              a.description.includes(itemName)
+          );
+          if (relatedAlert) {
+            alertsToResolve.push({ ...relatedAlert, status: 'RESOLVED' });
+          }
+
           get().addDispatchEvent({
             type: 'RESTOCK_DELIVERED',
             title: '补货配送完成',
             description: `${order.items[0]?.name || '商品'}补货已送达，库存已自动补充`,
             area: 'CONCESSION',
             targetId: orderId,
+            relatedAlertId: relatedAlert?.id,
             operator: '系统自动',
           });
         }
+      });
+
+      const finalAlerts = [...state.alerts];
+      alertsToResolve.forEach((resolvedAlert) => {
+        const idx = finalAlerts.findIndex((a) => a.id === resolvedAlert.id);
+        if (idx >= 0) finalAlerts[idx] = resolvedAlert;
+      });
+
+      set({
+        ticketMachines: updatedMachines,
+        hallRealtimeMap: { ...state.hallRealtimeMap, ...updatedRealtime },
+        concessionItems: finalConcession,
+        restockOrders: updatedOrders,
+        alerts: finalAlerts,
       });
 
       get().detectQueueAlerts();
@@ -360,12 +392,21 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
         2: '运营经理',
         3: '店长',
       };
+      const itemName = orderAfter.items[0]?.name;
+      const relatedAlert = get().alerts.find(
+        (a) =>
+          a.type === 'STOCK' &&
+          a.status !== 'RESOLVED' &&
+          itemName &&
+          a.description.includes(itemName)
+      );
       get().addDispatchEvent({
         type: 'RESTOCK_APPROVE',
         title: `补货申请${levelLabels[level]}审批通过`,
         description: `${orderAfter.items[0]?.name || '商品'}补货单${levelLabels[level]}级审批通过`,
         area: 'CONCESSION',
         targetId: orderAfter.id,
+        relatedAlertId: relatedAlert?.id,
         operator: levelLabels[level],
       });
     }
@@ -394,12 +435,21 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
         2: '运营经理',
         3: '店长',
       };
+      const itemName = orderAfter.items[0]?.name;
+      const relatedAlert = get().alerts.find(
+        (a) =>
+          a.type === 'STOCK' &&
+          a.status !== 'RESOLVED' &&
+          itemName &&
+          a.description.includes(itemName)
+      );
       get().addDispatchEvent({
         type: 'RESTOCK_REJECT',
         title: `补货申请被${levelLabels[level]}驳回`,
         description: `${orderAfter.items[0]?.name || '商品'}补货单被${levelLabels[level]}驳回`,
         area: 'CONCESSION',
         targetId: orderAfter.id,
+        relatedAlertId: relatedAlert?.id,
         operator: levelLabels[level],
       });
     }
@@ -424,7 +474,7 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
       if (m.status !== 'ONLINE') return;
 
       const machineNum = m.id.replace('tm-', '');
-      const hasActiveAlert = state.alerts.some(
+      const activeAlert = state.alerts.find(
         (a) =>
           a.type === 'QUEUE' &&
           a.status !== 'RESOLVED' &&
@@ -436,23 +486,27 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
       );
 
       if (m.queueLength >= QUEUE_THRESHOLD.WARNING) {
-        if (!hasActiveAlert) {
+        let currentAlert = activeAlert;
+
+        if (!activeAlert) {
           const alert: AlertEvent = {
             id: generateId('alert'),
             type: 'QUEUE',
             level: m.queueLength >= 15 ? 'CRITICAL' : 'WARNING',
             title: '取票机排队告警',
             description: `${machineNum}号取票机排队人数达${m.queueLength}人`,
-            location3d: m.position,
+            location3d: toGlobal(m.position),
             status: 'NEW',
             createdAt: now,
           };
           newAlerts.push(alert);
+          currentAlert = alert;
         }
 
         if (!activePath) {
           const closedWindows = updatedWindows.filter((w) => !w.open);
           let targetWindow: CounterWindow | undefined;
+          const alertId = currentAlert?.id;
 
           if (closedWindows.length > 0) {
             const scored = closedWindows.map((w) => {
@@ -474,6 +528,7 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
               description: `${machineNum}号取票机排队拥堵，自动开启${targetWindow.name}`,
               area: 'TICKETING',
               targetId: targetWindow.id,
+              relatedAlertId: alertId,
               operator: '系统自动',
             });
           } else {
@@ -492,7 +547,7 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
             const midPos = {
               x: (fromPos.x + toPos.x) / 2,
               y: 0.3,
-              z: -13,
+              z: (fromPos.z + toPos.z) / 2,
             };
 
             const newPath: GuidePath = {
@@ -514,6 +569,7 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
               description: `${machineNum}号取票机 → ${targetWindow.name}`,
               area: 'TICKETING',
               targetId: newPath.id,
+              relatedAlertId: alertId,
               operator: '系统自动',
             });
           }
@@ -539,6 +595,7 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
           description: `${machineNum}号取票机排队已恢复正常`,
           area: 'TICKETING',
           targetId: activePath.id,
+          relatedAlertId: alertToResolve?.id,
           operator: '系统自动',
         });
       }
@@ -551,7 +608,7 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
         level: 'WARNING',
         title: '所有窗口已开启',
         description: '当前所有人工窗口均已开放，仍有取票机排队拥堵，请考虑增加临时窗口',
-        location3d: { x: 0, y: 0, z: -14 },
+        location3d: toGlobal({ x: 0, y: 0, z: 1.5 }),
         status: 'NEW',
         createdAt: now,
       });
@@ -568,11 +625,15 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
 
     const updates: Partial<TheaterState> = {};
     if (newAlerts.length) {
-      const existingIds = new Set(state.alerts.map((a) => a.id));
-      const finalAlerts = [
-        ...newAlerts.filter((a) => !existingIds.has(a.id)),
-        ...state.alerts,
-      ];
+      const finalAlerts = [...state.alerts];
+      newAlerts.forEach((newAlert) => {
+        const idx = finalAlerts.findIndex((a) => a.id === newAlert.id);
+        if (idx >= 0) {
+          finalAlerts[idx] = newAlert;
+        } else {
+          finalAlerts.unshift(newAlert);
+        }
+      });
       updates.alerts = finalAlerts;
     }
     if (JSON.stringify(updatedWindows) !== JSON.stringify(state.counterWindows)) {
@@ -611,7 +672,7 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
       const quantity = item.safetyStock * 2;
       const unitPrice = Math.round(item.unitPrice * 0.6 * 100) / 100;
 
-      newOrders.push({
+      const order: RestockOrder = {
         id: generateId('RO'),
         items: [{ sku: item.sku, name: item.name, quantity, unitPrice }],
         totalAmount: Math.round(quantity * unitPrice * 100) / 100,
@@ -643,7 +704,8 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
         ],
         delivery: null,
         createdAt: now,
-      });
+      };
+      newOrders.push(order);
 
       const existingAlert = state.alerts.find(
         (a) =>
@@ -651,8 +713,9 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
           a.status !== 'RESOLVED' &&
           a.description.includes(item.name)
       );
+      let alertId: string | undefined;
       if (!existingAlert) {
-        newAlerts.push({
+        const alert: AlertEvent = {
           id: generateId('alert-stock'),
           type: 'STOCK',
           level: item.currentStock <= item.dangerStock ? 'CRITICAL' : 'WARNING',
@@ -661,8 +724,22 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
           location3d: item.position,
           status: 'NEW',
           createdAt: now,
-        });
+        };
+        newAlerts.push(alert);
+        alertId = alert.id;
+      } else {
+        alertId = existingAlert.id;
       }
+
+      get().addDispatchEvent({
+        type: 'STOCK_RESTOCK_AUTO',
+        title: '自动生成补货申请',
+        description: `${item.name}库存不足，已自动生成补货申请`,
+        area: 'CONCESSION',
+        targetId: order.id,
+        relatedAlertId: alertId,
+        operator: '系统自动',
+      });
     });
 
     if (newOrders.length || newAlerts.length) {
@@ -670,16 +747,6 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
         restockOrders: [...newOrders, ...s.restockOrders],
         alerts: [...newAlerts, ...s.alerts],
       }));
-      newOrders.forEach((order) => {
-        get().addDispatchEvent({
-          type: 'STOCK_RESTOCK_AUTO',
-          title: '自动生成补货申请',
-          description: `${order.items[0]?.name || '商品'}库存不足，已自动生成补货申请`,
-          area: 'CONCESSION',
-          targetId: order.id,
-          operator: '系统自动',
-        });
-      });
     }
   },
 
@@ -739,6 +806,7 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
   adjustSchedulingConflict: (conflictId) => {
     let conflictHallName = '';
     let conflictGap = 0;
+    let relatedAlertId: string | undefined;
     set((state) => {
       const conflict = state.schedulingConflicts.find((c) => c.id === conflictId);
       if (!conflict) return {};
@@ -755,6 +823,7 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
           a.description.includes(hallName) &&
           a.description.includes(`${conflict.gapMinutes}分钟`)
         ) {
+          relatedAlertId = a.id;
           return { ...a, status: 'RESOLVED' as const };
         }
         return a;
@@ -786,6 +855,7 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
         description: `${conflictHallName}场次间隔${conflictGap}分钟，已自动推后调整`,
         area: 'HALLS',
         targetId: conflictId,
+        relatedAlertId,
         operator: '系统自动',
       });
     }
